@@ -2,17 +2,16 @@ package template;
 
 //the list of imports
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Random;
-import logist.LogistSettings;
+import java.util.Map;
 
-import logist.Measures;
-import logist.behavior.AuctionBehavior;
-import logist.behavior.CentralizedBehavior;
+import logist.LogistSettings;
 import logist.agent.Agent;
+import logist.behavior.CentralizedBehavior;
 import logist.config.Parsers;
-import logist.simulation.Vehicle;
 import logist.plan.Plan;
+import logist.simulation.Vehicle;
 import logist.task.Task;
 import logist.task.TaskDistribution;
 import logist.task.TaskSet;
@@ -100,4 +99,197 @@ public class CentralizedTemplate implements CentralizedBehavior {
         }
         return plan;
     }
+    
+// ----------------------------------------------------- BEGINNING OF OUR IMPLEMENTATION ----------------------------------------------------------
+    
+    public Solution SelectInitialSolution(List<Vehicle> vehicles, List<Task> tasks) {
+    	
+    	Vehicle biggest = null;
+    	double bestCapacity = 0;
+    	
+    	for(Vehicle v : vehicles) {
+    		double currentCapacity = v.capacity();
+    		if (currentCapacity > bestCapacity) {
+    			biggest = v;
+    			bestCapacity = currentCapacity;
+    		}
+    	}
+    	
+    	Map<TaskAugmented, Integer>       time      = new HashMap<TaskAugmented, Integer>();
+    	Map<TaskAugmented, TaskAugmented> nextTask  = new HashMap<TaskAugmented, TaskAugmented>();
+    	Map<Vehicle, TaskAugmented>       firstTask = new HashMap<Vehicle, TaskAugmented>();
+    	Map<TaskAugmented, Vehicle>       vehicle   = new HashMap<TaskAugmented, Vehicle>();
+    	
+    	
+    	TaskAugmented previous = null;
+    	
+    	for(int i = 0; i < tasks.size(); ++i) {
+    		
+    		Task task = tasks.get(i);
+    		TaskAugmented tp = new TaskAugmented(task, true);
+    		TaskAugmented td = new TaskAugmented(task, false);
+    		
+    		if(previous == null) {
+    			firstTask.put(biggest, tp);
+    		} else {
+    			nextTask.put(previous, td);
+    		}
+    		
+    		previous = td;
+    		
+    		
+    		
+    		nextTask.put(tp, td);
+    		
+    		if(task.weight > bestCapacity) {
+    			return null;
+    		}
+    		
+    		vehicle.put(tp, biggest);
+    		vehicle.put(td, biggest);
+    		
+    		time.put(tp, 2*i);
+    		time.put(td, 2*i + 1);
+    		
+    	}
+    	
+    	return new Solution(time, nextTask, vehicle, firstTask);
+    }
+    
+    
+    public List<Solution> chooseNeighbours(Solution s) {
+    	return null; 
+    }
+    
+    //transfers a task from v1 to v2 (as first task) or returns null if it was not possible to transfer a task
+    public Solution changeVehicle(Solution s, Vehicle v1, Vehicle v2) {
+    	
+    	Solution newS = new Solution(s);
+    	
+    	TaskAugmented p =  s.firstTask.get(v1);
+    	TaskAugmented d = new TaskAugmented(p.task, false);
+    	
+    	while(p != null && p.task.weight>v2.capacity()) {
+    		p =  s.nextTask.get(p);
+        	d = new TaskAugmented(p.task, false);        	
+    	}
+    	
+    	if(p == null) {
+    		newS = null;
+    	} else {
+    		newS = removeTask(v1, newS, p);
+    		newS = removeTask(v1, newS, d);
+    		newS = insertBothAfter(v2, newS, p, d, null);
+    	}
+    	
+    	return newS;
+    }
+    
+    
+//    public Solution changeTaskOrder(Solution s, Vehicle v1) {
+//    	
+//    	TaskAugmented toChange = s.
+//    	
+//    	do {
+//    		
+//    		List<TaskAugmented> insertp = new ArrayList<TaskAugmented>();
+//    		List<TaskAugmented> insertd = new ArrayList<TaskAugmented>();
+//    		
+//    		
+//
+//    		
+//    	} while();
+//    	
+//    	return null;
+//    }
+//    
+ // ----------------------- helper functions ----------------------------------------
+    
+    //updates time t for all tasks after 'from', including 'from', so it becomes t + toSum
+    public Solution updateTime(Vehicle v, Solution s, TaskAugmented from, int toSum) {
+    	Solution newS = new Solution(s);
+    	newS.time.put(from, s.time.get(from) + toSum);
+    	TaskAugmented t = s.nextTask.get(from);
+    	while(t != null) {
+    			newS.time.put(t, s.time.get(t) + toSum);
+    		
+    	}
+    	return newS;
+    }
+    
+    //removes a given task from a vehicle
+    public Solution removeTask(Vehicle v, Solution s, TaskAugmented toRemove) {
+    	
+    	Solution newS = new Solution(s);
+    	TaskAugmented t = newS.firstTask.get(v);
+    	
+    	while(!t.equals(toRemove) && !(t == null)) {
+    		t = s.nextTask.get(t);
+    	}
+    		
+    	if(t == null) {
+    		return null;
+    	}
+    	newS.firstTask.put(v, newS.nextTask.get(t));
+    	newS.vehicle.remove(t);
+    	newS = updateTime(v, newS, newS.nextTask.get(t), -1);
+    	
+    	return newS;
+    }
+    	
+    
+    
+    
+    // inserts a Task into a nextTasks array. Inserts right after 'mark', or at the beginning if 'mark' == null
+    public Solution insertAfter(Vehicle v, Solution s, TaskAugmented toInsert, TaskAugmented mark) {
+    	Solution newS = new Solution(s);
+    	if(mark == null) {
+    		TaskAugmented first = s.firstTask.get(v);
+    		newS.nextTask.put(toInsert, first);
+    		newS.firstTask.put(v, toInsert);
+    		newS.time.put(toInsert, 1);
+    		newS = updateTime(v, newS, first, 1);
+    	} else {
+    		TaskAugmented next = s.nextTask.get(mark);
+    		newS.time.put(toInsert, s.time.get(mark) + 1);
+    		newS.nextTask.put(toInsert, next);
+    		newS.nextTask.put(mark, toInsert);
+    		newS = updateTime(v, newS, next, 1); 
+    	}
+    	
+    	newS.vehicle.put(toInsert, v);
+    	return newS;
+    }
+    
+    //same as insertAfter but inserts 2 tasks (typically pickup and deliver) in a row
+    public Solution insertBothAfter(Vehicle v, Solution s, TaskAugmented toInsert1, TaskAugmented toInsert2,  TaskAugmented mark) {
+    	
+    	Solution newS = new Solution(s);
+    	
+    	if(mark == null) {
+    		TaskAugmented first = s.firstTask.get(v);
+    		newS.nextTask.put(toInsert2, first);
+    		newS.nextTask.put(toInsert1, toInsert2);
+    		newS.firstTask.put(v, toInsert1);
+    		newS.time.put(toInsert1, 1);
+    		newS.time.put(toInsert2, 2);
+    		newS = updateTime(v, newS, first, 2);
+    	} else {
+    		TaskAugmented next = s.nextTask.get(mark);
+    		newS.time.put(toInsert1, s.time.get(mark) + 1);
+    		newS.time.put(toInsert2, s.time.get(mark) + 2);
+    		newS.nextTask.put(toInsert1, toInsert2);
+    		newS.nextTask.put(toInsert2, next);
+    		newS.nextTask.put(mark, toInsert1);
+    		newS = updateTime(v, newS, next, 2); 
+    	}
+    	
+    	 
+		newS.vehicle.put(toInsert1, v);
+		newS.vehicle.put(toInsert2, v);
+    	return newS;
+    }
+    
 }
+
+
