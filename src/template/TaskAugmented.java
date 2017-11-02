@@ -3,11 +3,12 @@ package template;
 import java.util.Objects;
 
 import logist.task.Task;
+import logist.topology.Topology.City;
 
 public class TaskAugmented {
 
-	Task task;
-	boolean isPickup;
+	private Task task;
+	private boolean isPickup;
 	
 	public TaskAugmented(Task task, boolean isPickup) {
 		this.isPickup = isPickup;
@@ -26,6 +27,10 @@ public class TaskAugmented {
 		return task;
 	}
 	
+	public City city() {
+	    return isPickup ? task.pickupCity : task.deliveryCity;
+	}
+	
 	@Override
 	public boolean equals(Object o) {
 		if(o instanceof TaskAugmented) {
@@ -38,5 +43,10 @@ public class TaskAugmented {
 	@Override
 	public int hashCode() {
 		return Objects.hash(task, isPickup);
+	}
+	
+	@Override
+	public String toString() {
+	    return (isPickup ? "pick" : "deliver") + " " + task;
 	}
 }
