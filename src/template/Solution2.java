@@ -1,5 +1,6 @@
 package template;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -69,6 +70,16 @@ public class Solution2 {
     
     public Set<Entry<Vehicle, List<TaskAugmented>>> entries() {
         return plan.entrySet();
+    }
+    
+    public List<Vehicle> vehicles() {
+        List<Vehicle> vehicles = new ArrayList<Vehicle>();
+        
+        for (Entry<Vehicle, List<TaskAugmented>> e : entries()) {
+            vehicles.add(e.getKey());
+        }
+        
+        return vehicles;
     }
     
     @Override
