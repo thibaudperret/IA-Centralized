@@ -47,6 +47,6 @@ public class TaskAugmented {
 	
 	@Override
 	public String toString() {
-	    return (isPickup ? "pick" : "deliver") + " " + task;
+	    return (isPickup ? "pick" : "deliver") + " " + task.pickupCity + " -> " + task.deliveryCity;
 	}
 }

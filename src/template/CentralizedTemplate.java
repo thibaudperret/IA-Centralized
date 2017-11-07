@@ -4,21 +4,17 @@ package template;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Random;
-import java.util.Set;
+import java.util.function.Predicate;
 
 import logist.LogistSettings;
 import logist.agent.Agent;
 import logist.behavior.CentralizedBehavior;
 import logist.config.Parsers;
 import logist.plan.Action;
-import logist.plan.Action.Move;
-import logist.plan.Action.Pickup;
 import logist.plan.Plan;
 import logist.simulation.Vehicle;
 import logist.task.Task;
@@ -41,11 +37,12 @@ public class CentralizedTemplate implements CentralizedBehavior {
     private long timeout_setup;
     private long timeout_plan;
     
-    private static Random random = new Random();
+    private static Random random = new Random(/*12*/);
+    private static int numberIterations = 50;
+    private static double probability = 0.9d;
 
     @Override
     public void setup(Topology topology, TaskDistribution distribution, Agent agent) {
-
         // this code is used to get the timeouts
         LogistSettings ls = null;
         try {
@@ -67,10 +64,10 @@ public class CentralizedTemplate implements CentralizedBehavior {
     @Override
     public List<Plan> plan(List<Vehicle> vehicles, TaskSet tasks) {
         long time_start = System.currentTimeMillis();
-        
-        Solution2 s = selectInitialSolution(vehicles, tasks);
 
-        List<Plan> plans = plans(finalSolution(s, 10), vehicles);
+        Solution s = selectInitialSolution(vehicles, tasks);
+
+        List<Plan> plans = planFromSolution(finalSolution(s, numberIterations, timeout_plan), vehicles);
 
         long time_end = System.currentTimeMillis();
         long duration = time_end - time_start;
@@ -101,15 +98,26 @@ public class CentralizedTemplate implements CentralizedBehavior {
             // set current city
             current = task.deliveryCity;
         }
+        
         return plan;
     }
     
-// ----------------------------------------------------- BEGINNING OF OUR IMPLEMENTATION ----------------------------------------------------------
+/*----------------------------------------------------- BEGINNING OF OUR IMPLEMENTATION ---------------------------------------------------------- */
     
-    private static List<Plan> plans(Solution2 finalS, List<Vehicle> vehicles) {
+    /**
+     * Creates a <code>Plan</code> of the Logist library from a solution
+     */
+    private static List<Plan> planFromSolution(Solution finalS, List<Vehicle> vehicles) {
         List<Plan> plans = new ArrayList<Plan>();
         
+        System.out.println(finalS);
+        double cost = 0d;
+        
         for (Vehicle v : vehicles) {
+            double vCost = cost(finalS, v);
+            System.out.println("cost for " + v.name() + ": " + vCost);
+            cost += vCost;
+            
             City previous = v.getCurrentCity();
             Plan plan = new Plan(previous);
             
@@ -130,18 +138,22 @@ public class CentralizedTemplate implements CentralizedBehavior {
             plans.add(plan);
         }
         
+        System.out.println("TOTAL: " + cost);
+        System.out.println();
+        
         return plans;
     }
     
     /**
      * Creates the initial solution by putting every task in the biggest vehicle given. Every task will be picked up and delivered before the next
      */
-    private static Solution2 selectInitialSolution(List<Vehicle> vehicles, TaskSet tasks) {
+    private static Solution selectInitialSolution(List<Vehicle> vehicles, TaskSet tasks) {
         Vehicle biggest = null;
         double bestCapacity = 0;
         
         Map<Vehicle, List<TaskAugmented>> plan = new HashMap<Vehicle, List<TaskAugmented>>();
         
+        // find biggest
         for(Vehicle v : vehicles) {
             plan.put(v, new LinkedList<TaskAugmented>());
             
@@ -165,57 +177,106 @@ public class CentralizedTemplate implements CentralizedBehavior {
             plan.get(biggest).add(td);            
         }
         
-        return new Solution2(plan);
+        return new Solution(plan);
     }
     
-    private static Solution2 finalSolution(Solution2 initS, int iter) {
-        Solution2 returnS = initS;
+    /**
+     * Alternate initial solution where we put tasks in every vehicle
+     */
+    private static Solution selectInitialSolutionBis(List<Vehicle> vehicles, TaskSet tasks) {
+        int vehicle = 0;
+        
+        Map<Vehicle, List<TaskAugmented>> plan = new HashMap<Vehicle, List<TaskAugmented>>();
+        // init
+        for(Vehicle v : vehicles) {
+            plan.put(v, new LinkedList<TaskAugmented>());
+        }
+        
+        for (Task task : tasks) {
+            TaskAugmented tp = new TaskAugmented(task, true);
+            TaskAugmented td = new TaskAugmented(task, false);
+            
+            while (task.weight > vehicles.get(vehicle).capacity()) {
+                vehicle = (vehicle + 1) % vehicles.size();
+            }
+            
+            plan.get(vehicles.get(vehicle)).add(tp);
+            plan.get(vehicles.get(vehicle)).add(td);
+            
+            vehicle = (vehicle + 1) % vehicles.size();
+        }
+        
+        return new Solution(plan);
+    }
+    
+    /**
+     * Does <code>iter</code> iterations of <code>chooseNeighbors</code> to find a suboptimal solution
+     */
+    private static Solution finalSolution(Solution initS, int iter, long timeoutPlan) {
+        Solution returnS = initS;
+        long start = System.currentTimeMillis();
         
         for (int i = 0; i < iter; ++i) {
-            returnS = chooseNeighbors(returnS, 0.3);
+            // We subtract 100 ms from the timeoutPlan so that we do not realise too late we've taken too much time
+            if (System.currentTimeMillis() - start > timeoutPlan - 100) {
+                return returnS;
+            }
+            returnS = chooseNeighbors(returnS, probability);            
         }
         
         return returnS;
     }
     
     /**
-     *  Computed the best solution from vehicle changes and order changes, return this best solutoin according to probability
+     * Computed the best solution from vehicle changes and order changes, return
+     * this best solution according to probability
      */
-    private static Solution2 chooseNeighbors(Solution2 s, double pickProb) {
-        Vehicle v; 
+    private static Solution chooseNeighbors(Solution s, double pickProb) {
+        List<Vehicle> nonEmptyVehicles = new ArrayList<Vehicle>();
+        for (Vehicle v2 : s.vehicles()) {
+            if (!s.get(v2).isEmpty()) {
+                nonEmptyVehicles.add(v2);
+            }
+        }
         
-        do {
-            v = s.vehicles().get(random.nextInt(s.vehicles().size()));
-        } while (s.get(v).isEmpty());
-        
-        List<Solution2> changedVehicleList = changeVehicle(s, v);      
-          
-        List<TaskAugmented> vTasks = s.get(v);        
-        Task t = vTasks.get(random.nextInt(vTasks.size())).task();
-        
-        List<Solution2> changedEverythingList = changeOrder(s, v, t);
+        // get random vehicle that's not empty
+        Vehicle v = nonEmptyVehicles.get(random.nextInt(nonEmptyVehicles.size()));
+
+        List<TaskAugmented> vTasks = s.get(v);
+        Task t = vTasks.get(random.nextInt(vTasks.size())).task(); // the task that will be passed to other vehicles and changed in order
+
+        List<Solution> changedVehicleList = changeVehicle(s, v, t);
+
+        List<Solution> changedOrderList = changeOrder(s, v, t);
+
+        List<Solution> changedEverythingList = new ArrayList<Solution>();
         changedEverythingList.addAll(changedVehicleList);
-        
-        Solution2 best = getBest(changedEverythingList);
-        
+        changedEverythingList.addAll(changedOrderList);
+
+        Solution best = getBest(changedEverythingList);
+
         return random.nextDouble() < pickProb ? best : s;
     }
     
     /**
      * Selects the best solution amongst the given ones regarding the cost of a solution
      */
-    private static Solution2 getBest(List<Solution2> sList) {
+    private static Solution getBest(List<Solution> sList) {
         double bestCost = Double.POSITIVE_INFINITY;
-        Solution2 bestS = null;
+        double bestMaxLength = Double.POSITIVE_INFINITY;
+        Solution bestS = null;
         
-        for (Solution2 s : sList) {
+        for (Solution s : sList) {
             double cost = 0;
-            for (Entry<Vehicle, List<TaskAugmented>> e : s.entries()) {
-                cost +=  cost(s, e.getKey());
+            int maxLength = 0;
+            for (Vehicle v : s.vehicles()) {
+                cost += cost(s, v);
+                maxLength = Integer.max(maxLength, s.get(v).size());
             }
             
-            if (cost < bestCost) {
+            if (cost < bestCost || (cost == bestCost && maxLength < bestMaxLength)) {
                 bestCost = cost;
+                bestMaxLength = maxLength;
                 bestS = s;
             }
         }
@@ -226,7 +287,7 @@ public class CentralizedTemplate implements CentralizedBehavior {
     /**
      * Cost of a solution for one vehicle
      */
-    private static double cost(Solution2 s, Vehicle v) {
+    private static double cost(Solution s, Vehicle v) {
         double cost = 0;
         
         if (s.get(v).isEmpty()) {
@@ -243,27 +304,27 @@ public class CentralizedTemplate implements CentralizedBehavior {
     }
     
     /**
-     * Creates a derivated solution from <code>s</code> by putting first task of <code>v1</code> to <code>v2</code>
+     * Creates derivated solutions from <code>s</code> by putting random task of <code>v</code> to other vehicles
      */
-    private static List<Solution2> changeVehicle(Solution2 s, Vehicle v) {
-        List<Solution2> sList = new ArrayList<Solution2>();
+    private static List<Solution> changeVehicle(Solution s, Vehicle v, Task t) {
+        List<Solution> sList = new ArrayList<Solution>();
         if (s.get(v).isEmpty()) {
             return sList;
         }
                 
-        TaskAugmented tp = s.get(v).get(0); // supposed to be a pick up
-        TaskAugmented td = new TaskAugmented(tp.task(), false);
+        TaskAugmented tp = new TaskAugmented(t, true); // a pick up
+        TaskAugmented td = new TaskAugmented(t, false); // equivalent delivery
         
         for (Vehicle v2 : s.vehicles()) {
             if (!v.equals(v2)) {
                 if (v2.capacity() > tp.task().weight) {
-                    Solution2 newS = new Solution2(s);
+                    Solution newS = new Solution(s);
                     
                     newS.remove(v, tp);
                     newS.remove(v, td);
                     
-                    newS.add(v2, tp);
-                    newS.add(v2, td);
+                    newS.add(v2, 0, tp);
+                    newS.add(v2, 1, td);
                     
                     sList.add(newS);
                 }
@@ -273,15 +334,22 @@ public class CentralizedTemplate implements CentralizedBehavior {
         return sList;
     }
     
-    private static List<Solution2> changeOrder(Solution2 s, Vehicle v, Task t) {
-        List<Solution2> sList = new ArrayList<Solution2>();
-        Solution2 newS = new Solution2(s);
+    /**
+     * Creates derivated solutions from <code>s</code> by changing the order of task <code>t</code> in vehicle <code>v</code>
+     */
+    private static List<Solution> changeOrder(Solution s, Vehicle v, Task t) {
+        List<Solution> sList = new ArrayList<Solution>();
+        Solution newS = new Solution(s);
 
         TaskAugmented tp = new TaskAugmented(t, true);
         TaskAugmented td = new TaskAugmented(t, false);
         
         newS.remove(v, tp);
         newS.remove(v, td);
+        
+        if (newS.get(v).isEmpty()) {
+            return Arrays.asList(new Solution(s));
+        }
         
         List<List<Integer>> indicesList = new ArrayList<List<Integer>>();
         
@@ -297,7 +365,7 @@ public class CentralizedTemplate implements CentralizedBehavior {
             
             // finish
             if ((weightAcceptable < t.weight && !commited) || i == (newS.get(v).size() - 1)) {
-                max = i;
+                max = i + 1;
                 indicesList.add(Arrays.asList(min, max));
                 commited = true;
             }
@@ -317,7 +385,7 @@ public class CentralizedTemplate implements CentralizedBehavior {
         for (List<Integer> minMax : indicesList) {
             for (int i = minMax.get(0); i <= minMax.get(1); ++i) {
                 for (int j = i; j <= minMax.get(1); ++j) {
-                    Solution2 newNewS = new Solution2(newS);
+                    Solution newNewS = new Solution(newS);
                     
                     newNewS.add(v, i, tp);
                     newNewS.add(v, j + 1, td);   
@@ -329,194 +397,6 @@ public class CentralizedTemplate implements CentralizedBehavior {
         
         return sList;
     }
-    
-    /*public Solution SelectInitialSolution(List<Vehicle> vehicles, List<Task> tasks) {
-    	
-    	Vehicle biggest = null;
-    	double bestCapacity = 0;
-    	
-    	for(Vehicle v : vehicles) {
-    		double currentCapacity = v.capacity();
-    		if (currentCapacity > bestCapacity) {
-    			biggest = v;
-    			bestCapacity = currentCapacity;
-    		}
-    	}
-    	
-    	Map<TaskAugmented, Integer>       time      = new HashMap<TaskAugmented, Integer>();
-    	Map<TaskAugmented, TaskAugmented> nextTask  = new HashMap<TaskAugmented, TaskAugmented>();
-    	Map<Vehicle, TaskAugmented>       firstTask = new HashMap<Vehicle, TaskAugmented>();
-    	Map<TaskAugmented, Vehicle>       vehicle   = new HashMap<TaskAugmented, Vehicle>();
-    	
-    	
-    	TaskAugmented previous = null;
-    	
-    	for(int i = 0; i < tasks.size(); ++i) {
-    		
-    		Task task = tasks.get(i);
-    		TaskAugmented tp = new TaskAugmented(task, true);
-    		TaskAugmented td = new TaskAugmented(task, false);
-    		
-    		if(previous == null) {
-    			firstTask.put(biggest, tp);
-    		} else {
-    			nextTask.put(previous, td);
-    		}
-    		
-    		previous = td;
-    		
-    		
-    		
-    		nextTask.put(tp, td);
-    		
-    		if(task.weight > bestCapacity) {
-    			return null;
-    		}
-    		
-    		vehicle.put(tp, biggest);
-    		vehicle.put(td, biggest);
-    		
-    		time.put(tp, 2*i);
-    		time.put(td, 2*i + 1);
-    		
-    	}
-    	
-    	return new Solution(time, nextTask, vehicle, firstTask);
-    }
-    
-    
-    public List<Solution> chooseNeighbours(Solution s) {
-    	return null; 
-    }
-    
-    //transfers a task from v1 to v2 (as first task) or returns null if it was not possible to transfer a task
-    public Solution changeVehicle(Solution s, Vehicle v1, Vehicle v2) {
-    	
-    	Solution newS = new Solution(s);
-    	
-    	TaskAugmented p =  s.firstTask.get(v1);
-    	TaskAugmented d = new TaskAugmented(p.task, false);
-    	
-    	while(p != null && p.task.weight>v2.capacity()) {
-    		p =  s.nextTask.get(p);
-        	d = new TaskAugmented(p.task, false);        	
-    	}
-    	
-    	if(p == null) {
-    		newS = null;
-    	} else {
-    		newS = removeTask(v1, newS, p);
-    		newS = removeTask(v1, newS, d);
-    		newS = insertBothAfter(v2, newS, p, d, null);
-    	}
-    	
-    	return newS;
-    }
-    
-    
-//    public Solution changeTaskOrder(Solution s, Vehicle v1) {
-//    	
-//    	TaskAugmented toChange = s.
-//    	
-//    	do {
-//    		
-//    		List<TaskAugmented> insertp = new ArrayList<TaskAugmented>();
-//    		List<TaskAugmented> insertd = new ArrayList<TaskAugmented>();
-//    		
-//    		
-//
-//    		
-//    	} while();
-//    	
-//    	return null;
-//    }
-//    
- // ----------------------- helper functions ----------------------------------------
-    
-    //updates time t for all tasks after 'from', including 'from', so it becomes t + toSum
-    public Solution updateTime(Vehicle v, Solution s, TaskAugmented from, int toSum) {
-    	Solution newS = new Solution(s);
-    	newS.time.put(from, s.time.get(from) + toSum);
-    	TaskAugmented t = s.nextTask.get(from);
-    	while(t != null) {
-    			newS.time.put(t, s.time.get(t) + toSum);
-    		
-    	}
-    	return newS;
-    }
-    
-    //removes a given task from a vehicle
-    public Solution removeTask(Vehicle v, Solution s, TaskAugmented toRemove) {
-    	
-    	Solution newS = new Solution(s);
-    	TaskAugmented t = newS.firstTask.get(v);
-    	
-    	while(!t.equals(toRemove) && !(t == null)) {
-    		t = s.nextTask.get(t);
-    	}
-    		
-    	if(t == null) {
-    		return null;
-    	}
-    	newS.firstTask.put(v, newS.nextTask.get(t));
-    	newS.vehicle.remove(t);
-    	newS = updateTime(v, newS, newS.nextTask.get(t), -1);
-    	
-    	return newS;
-    }
-    	
-    
-    
-    
-    // inserts a Task into a nextTasks array. Inserts right after 'mark', or at the beginning if 'mark' == null
-    public Solution insertAfter(Vehicle v, Solution s, TaskAugmented toInsert, TaskAugmented mark) {
-    	Solution newS = new Solution(s);
-    	if(mark == null) {
-    		TaskAugmented first = s.firstTask.get(v);
-    		newS.nextTask.put(toInsert, first);
-    		newS.firstTask.put(v, toInsert);
-    		newS.time.put(toInsert, 1);
-    		newS = updateTime(v, newS, first, 1);
-    	} else {
-    		TaskAugmented next = s.nextTask.get(mark);
-    		newS.time.put(toInsert, s.time.get(mark) + 1);
-    		newS.nextTask.put(toInsert, next);
-    		newS.nextTask.put(mark, toInsert);
-    		newS = updateTime(v, newS, next, 1); 
-    	}
-    	
-    	newS.vehicle.put(toInsert, v);
-    	return newS;
-    }
-    
-    //same as insertAfter but inserts 2 tasks (typically pickup and deliver) in a row
-    public Solution insertBothAfter(Vehicle v, Solution s, TaskAugmented toInsert1, TaskAugmented toInsert2,  TaskAugmented mark) {
-    	
-    	Solution newS = new Solution(s);
-    	
-    	if(mark == null) {
-    		TaskAugmented first = s.firstTask.get(v);
-    		newS.nextTask.put(toInsert2, first);
-    		newS.nextTask.put(toInsert1, toInsert2);
-    		newS.firstTask.put(v, toInsert1);
-    		newS.time.put(toInsert1, 1);
-    		newS.time.put(toInsert2, 2);
-    		newS = updateTime(v, newS, first, 2);
-    	} else {
-    		TaskAugmented next = s.nextTask.get(mark);
-    		newS.time.put(toInsert1, s.time.get(mark) + 1);
-    		newS.time.put(toInsert2, s.time.get(mark) + 2);
-    		newS.nextTask.put(toInsert1, toInsert2);
-    		newS.nextTask.put(toInsert2, next);
-    		newS.nextTask.put(mark, toInsert1);
-    		newS = updateTime(v, newS, next, 2); 
-    	}
-    	
-    	 
-		newS.vehicle.put(toInsert1, v);
-		newS.vehicle.put(toInsert2, v);
-    	return newS;
-    }*/
     
 }
 
